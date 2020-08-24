@@ -1,15 +1,18 @@
-from collections import namedtuple
 
 import pandas as pd
-
+import datetime
 from syscore.fileutils import get_filename_for_package
 from syscore.genutils import value_or_npnan, NOT_REQUIRED
+from syscore.objects import missing_data, missing_contract
+
+from sysbrokers.IB.ibFuturesContracts import ibFuturesContractData
+from sysbrokers.IB.ibOrders import sign_from_BS
 from sysdata.futures.futures_per_contract_prices import futuresContractPriceData, futuresContractPrices
-from sysdata.futures.contracts import futuresContract, listOfFuturesContracts
 from sysdata.futures.instruments import futuresInstrument
-from sysdata.futures.contract_dates_and_expiries import expiryDate
+
+from sysexecution.tick_data import tickerObject, oneTick
+
 from syslogdiag.log import logtoscreen
-from syscore.objects import missing_contract, missing_instrument, missing_file
 
 IB_FUTURES_CONFIG_FILE = get_filename_for_package("sysbrokers.IB.ibConfigFutures.csv")
 
@@ -32,6 +35,10 @@ class ibFuturesContractPriceData(futuresContractPriceData):
     def __repr__(self):
         return "IB Futures per contract price data %s" % str(self.ibconnection)
 
+    @property
+    def futures_contract_data(self):
+        return  ibFuturesContractData(self.ibconnection)
+
     def has_data_for_contract(self, contract_object):
         """
         Does IB have data for a given contract?
@@ -40,8 +47,7 @@ class ibFuturesContractPriceData(futuresContractPriceData):
         :param contract_object:
         :return: bool
         """
-
-        expiry_date = self.get_actual_expiry_date_for_contract(contract_object)
+        expiry_date = self.futures_contract_data.get_actual_expiry_date_for_contract(contract_object)
         if expiry_date is missing_contract:
             return False
         else:
@@ -55,57 +61,8 @@ class ibFuturesContractPriceData(futuresContractPriceData):
         :return: list of str
         """
 
-        config = self._get_ib_config()
-        if config is missing_file:
-            self.log.warn("Can't get list of instruments because IB config file missing")
-            return []
+        return self.futures_contract_data.get_instruments_with_config_data()
 
-        instrument_list = list(config.Instrument)
-
-        return instrument_list
-
-    def contracts_with_price_data_for_instrument_code(self, instrument_code):
-        """
-        Valid contracts for a given instrument code
-
-        :param instrument_code: str
-        :return: list of contracts
-        """
-        new_log = self.log.setup(instrument_code=instrument_code)
-
-        instrument_object_with_ib_config = self._get_instrument_object_with_IB_metadata(instrument_code)
-        if instrument_object_with_ib_config is missing_instrument:
-            new_log.warn("Can't get list of contracts for illdefined instrument %s" % instrument_code, instrument_code=instrument_code)
-            return listOfFuturesContracts([])
-
-        list_of_contract_dates = self.ibconnection.broker_get_futures_contract_list(instrument_object_with_ib_config)
-        list_of_contracts = [futuresContract(instrument_code, contract_date)
-                             for contract_date in list_of_contract_dates]
-
-        return listOfFuturesContracts(list_of_contracts)
-
-    def get_actual_expiry_date_for_contract(self, contract_object):
-        """
-        Get the actual expiry date of a contract from IB
-
-        :param contract_object: type futuresContract
-        :return: YYYYMMDD or None
-        """
-        new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
-
-        contract_object_with_ib_data = self._get_contract_object_with_IB_metadata(contract_object)
-        if contract_object_with_ib_data is missing_contract:
-            new_log.msg("Can't resolve contract so can't find expiry date")
-            return missing_contract
-
-        expiry_date = self.ibconnection.broker_get_contract_expiry_date(contract_object_with_ib_data)
-
-        if expiry_date is missing_contract:
-            new_log.msg("No IB expiry date found")
-        else:
-            expiry_date = expiryDate.from_str(expiry_date, date_format="%Y%m%d")
-
-        return expiry_date
 
 
     def get_prices_for_contract_object(self, contract_object):
@@ -113,29 +70,11 @@ class ibFuturesContractPriceData(futuresContractPriceData):
         Get some prices
         (daily frequency: using IB historical data)
 
-        We override this method, rather than _get_prices_for_contract_object_no_checking
-        Because the list of dates returned by contracts_with_price_data is likely to not match (expiries)
-
         :param contract_object:  futuresContract
         :return: data
         """
-        new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
 
-        contract_object_with_ib_data = self._get_contract_object_with_IB_metadata(contract_object)
-        if contract_object_with_ib_data is missing_contract:
-            new_log.warn("Can't get data for %s" % str(contract_object))
-            return futuresContractPrices.create_empty()
-
-        price_data = self.ibconnection.broker_get_historical_futures_data_for_contract(contract_object_with_ib_data,
-                                                                                       bar_freq = "D")
-
-        if len(price_data)==0:
-            new_log.msg("No IB price data found for %s" % str(contract_object))
-            data = futuresContractPrices.create_empty()
-        else:
-            data = futuresContractPrices(price_data)
-
-        return data
+        return self.get_prices_at_frequency_for_contract_object(contract_object, freq="D")
 
     def get_prices_at_frequency_for_contract_object(self, contract_object, freq="D"):
         """
@@ -145,12 +84,12 @@ class ibFuturesContractPriceData(futuresContractPriceData):
         Because the list of dates returned by contracts_with_price_data is likely to not match (expiries)
 
         :param contract_object:  futuresContract
-        :param freq: str; one of D, H, 5M, M, 10S, S
+        :param freq: str; one of D, H, 15M, 5M, M, 10S, S
         :return: data
         """
         new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
 
-        contract_object_with_ib_data = self._get_contract_object_with_IB_metadata(contract_object)
+        contract_object_with_ib_data = self.futures_contract_data.get_contract_object_with_IB_metadata(contract_object)
         if contract_object_with_ib_data is missing_contract:
             new_log.warn("Can't get data for %s" % str(contract_object))
             return futuresContractPrices.create_empty()
@@ -162,60 +101,79 @@ class ibFuturesContractPriceData(futuresContractPriceData):
             new_log.warn("No IB price data found for %s" % str(contract_object))
             data = futuresContractPrices.create_empty()
         else:
-            data = futuresContractPrices.only_have_final_prices(price_data)
+            data = futuresContractPrices(price_data)
+
+        data = futuresContractPrices(data[data.index<datetime.datetime.now()])
+        data = data.remove_zero_volumes()
 
         return data
 
+    def get_ticker_object_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        """
+        Returns my encapsulation of a ticker object
 
+        :param contract_object:
+        :param trade_list_for_multiple_legs:
+        :return:
+        """
 
-    def _get_contract_object_with_IB_metadata(self, contract_object):
+        new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
 
-        new_instrument_object = self._get_instrument_object_with_IB_metadata(contract_object.instrument_code)
-        if new_instrument_object is missing_instrument:
-            return missing_contract
+        contract_object_with_ib_data = self.futures_contract_data.get_contract_object_with_IB_metadata(contract_object)
+        if contract_object_with_ib_data is missing_contract:
+            new_log.warn("Can't get data for %s" % str(contract_object))
+            return futuresContractPrices.create_empty()
 
-        contract_object_with_ib_data = \
-            contract_object.new_contract_with_replaced_instrument_object( new_instrument_object)
+        ticker_with_bs = self.ibconnection.\
+                        get_ticker_object(contract_object_with_ib_data,
+                            trade_list_for_multiple_legs = trade_list_for_multiple_legs)
 
-        return contract_object_with_ib_data
+        ticker_object = ibTickerObject(ticker_with_bs)
 
-    def _get_instrument_object_with_IB_metadata(self, instrument_code):
-        new_log = self.log.setup(instrument_code=instrument_code)
+        return ticker_object
 
-        try:
-            assert instrument_code in self.get_instruments_with_price_data()
-        except:
-            new_log.warn("Instrument %s is not in IB configuration file" % instrument_code)
-            return missing_instrument
+    def cancel_market_data_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        """
+        Returns my encapsulation of a ticker object
 
-        config = self._get_ib_config()
-        if config is missing_file:
-            new_log.warn("Can't get config for instrument %s as IB configuration file missing" % instrument_code)
-            return missing_instrument
+        :param contract_object:
+        :param trade_list_for_multiple_legs:
+        :return:
+        """
 
-        instrument_object = get_instrument_object_from_config(config, instrument_code)
+        new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
 
-        return instrument_object
+        contract_object_with_ib_data = self.futures_contract_data.get_contract_object_with_IB_metadata(contract_object)
+        if contract_object_with_ib_data is missing_contract:
+            new_log.warn("Can't get data for %s" % str(contract_object))
+            return futuresContractPrices.create_empty()
 
-    # Configuration read in and cache
-    def _get_ib_config(self):
-        config = getattr(self, "_config", None)
-        if config is None:
-            config = self._get_and_set_ib_config_from_file()
+        self.ibconnection.cancel_market_data_for_contract_object(contract_object_with_ib_data,
+                            trade_list_for_multiple_legs = trade_list_for_multiple_legs)
 
-        return config
+    def get_recent_bid_ask_tick_data_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        """
+        Get last few price ticks
 
-    def _get_and_set_ib_config_from_file(self):
+        :param contract_object: futuresContract
+        :return:
+        """
+        new_log = self.log.setup(instrument_code=contract_object.instrument_code, contract_date=contract_object.date)
 
-        try:
-            config_data=pd.read_csv(IB_FUTURES_CONFIG_FILE)
-        except:
-            self.log.warn("Can't read file %s" % IB_FUTURES_CONFIG_FILE)
-            config_data = missing_file
+        contract_object_with_ib_data = self.futures_contract_data.get_contract_object_with_IB_metadata(contract_object)
+        if contract_object_with_ib_data is missing_contract:
+            new_log.warn("Can't get data for %s" % str(contract_object))
+            return futuresContractPrices.create_empty()
 
-        self._config = config_data
+        tick_data = self.ibconnection.\
+                        ib_get_recent_bid_ask_tick_data(contract_object_with_ib_data,
+                            trade_list_for_multiple_legs = trade_list_for_multiple_legs)
+        if tick_data is missing_contract:
+            return missing_data
 
-        return config_data
+        tick_data_as_df = from_ib_bid_ask_tick_data_to_dataframe(tick_data)
+
+        return tick_data_as_df
 
 
     def _get_prices_for_contract_object_no_checking(self, *args, **kwargs):
@@ -233,9 +191,30 @@ class ibFuturesContractPriceData(futuresContractPriceData):
     def get_contracts_with_price_data(self, *args, **kwargs):
         raise NotImplementedError("Do not use get_contracts_with_price_data with IB")
 
+class ibTickerObject(tickerObject):
+    def __init__(self, ticker_with_BS):
+        ticker = ticker_with_BS.ticker
+        BorS = ticker_with_BS.BorS
+        qty = sign_from_BS(BorS)
+        super().__init__(ticker, qty=qty)
+
+    def bid(self):
+        return self.ticker.bid
+
+    def ask(self):
+        return self.ticker.ask
+
+    def bid_size(self):
+        return self.ticker.bidSize
+
+    def ask_size(self):
+        return self.ticker.askSize
 
 
-def get_instrument_object_from_config(config, instrument_code):
+
+def get_instrument_object_from_config( instrument_code, config = None):
+    if config is None:
+        config = get_ib_config()
     config_row = config[config.Instrument == instrument_code]
     symbol = config_row.IBSymbol.values[0]
     exchange = config_row.IBExchange.values[0]
@@ -251,3 +230,23 @@ def get_instrument_object_from_config(config, instrument_code):
 
     return instrument_config
 
+def get_ib_config():
+    return pd.read_csv(IB_FUTURES_CONFIG_FILE)
+
+def from_ib_bid_ask_tick_data_to_dataframe(tick_data):
+    """
+
+    :param tick_data: list of HistoricalTickBidAsk()
+    :return: pd.DataFrame,['priceBid', 'priceAsk', 'sizeAsk', 'sizeBid']
+    """
+    time_index = [tick_item.time for tick_item in tick_data]
+    fields = ['priceBid', 'priceAsk', 'sizeAsk', 'sizeBid']
+
+    value_dict = {}
+    for field_name in fields:
+        field_values = [getattr(tick_item, field_name) for tick_item in tick_data]
+        value_dict[field_name] = field_values
+
+    output = pd.DataFrame(value_dict, time_index)
+
+    return output

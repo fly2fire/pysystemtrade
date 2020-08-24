@@ -56,7 +56,7 @@ class csvPaths(simData):
 
 """
 The rest of these sub classes all follow the pattern of accessing a data object specific to the type of data being read
-The directory they look in will be eithier be
+The directory they look in will be either be
   (i) specified as override_data_path on __init__ (via csvPaths init),
   ii) specified in the datapath_dict with the relevant keyname on __init__ (via csvPaths init),
   iii) default specified in the file of the specific data object
@@ -111,7 +111,7 @@ class csvFuturesConfigDataForSim(csvPaths, futuresConfigDataForSim):
     def _get_config_data_object(self):
 
         pathname = self._resolve_path("config_data")
-        data_object = csvFuturesInstrumentData(pathname)
+        data_object = csvFuturesInstrumentData(datapath = pathname)
 
         return data_object
 
@@ -255,20 +255,9 @@ class csvFXData(csvPaths, simData):
         2018-01-09    1.197046
         2018-01-10    1.192933
         Name: FX, dtype: float64
-        >>> data._get_fx_cross("EUR", "GBP").tail(2)
-        2018-01-09    0.882043
-        2018-01-10    0.881542
-        Name: FX, dtype: float64
-        >>> data._get_fx_cross( "GBP", "USD").tail(2)
-        2018-01-09    1.357128
-        2018-01-10    1.353235
-        Name: FX, dtype: float64
         """
 
         self.log.msg("Loading csv fx data", fx="%s%s" % (currency1, currency2))
-
-        if currency1 == currency2:
-            return self._get_default_series()
 
         csv_fx_prices_data = self._get_fx_data_object()
         code = currency1+currency2
@@ -276,7 +265,7 @@ class csvFXData(csvPaths, simData):
         fx_prices = csv_fx_prices_data.get_fx_prices(code)
 
         if fx_prices.empty:
-            return None
+            raise Exception("No FX data for %s" % code)
 
         return fx_prices
 

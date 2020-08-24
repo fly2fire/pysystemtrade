@@ -1,3 +1,5 @@
+import numpy as np
+
 from copy import copy
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -168,6 +170,13 @@ class Rules(SystemStage):
         result = trading_rule.call(system, instrument_code)
         result.columns = [rule_variation_name]
 
+        ## Check for all zeros
+        check_result = copy(result)
+        check_result[check_result==0.0]=np.nan
+        if all(check_result.isna()):
+            self.log.warn("Setting rule %s for %s to all NAN as all values are 0 or NAN" % (instrument_code, rule_variation_name))
+            result[:]=np.nan
+
         return result
 
     @dont_cache
@@ -331,7 +340,7 @@ class TradingRule(object):
         if data_args is None:
             # This will be the case if the rule was built from arguments
             # Resolve any _ prefixed other_args
-            other_args, data_args = seperate_other_args(other_args, data)
+            other_args, data_args = separate_other_args(other_args, data)
 
         # fill the object with data
         setattr(self, "function", rule_function)
@@ -405,9 +414,9 @@ class TradingRule(object):
 
         return self.function(*data, **other_args)
 
-def seperate_other_args(other_args, data):
+def separate_other_args(other_args, data):
     """
-    Seperate out other arguments into those passed to the trading rule function, and any
+    Separate out other arguments into those passed to the trading rule function, and any
      that will be passed to the data functions (data_args)
 
     :param other_args: dict containing args. Some may have "_" prefix of various lengths, these are data args

@@ -1,4 +1,4 @@
-
+from syscore.objects import arg_not_supplied
 class brokerClient(object):
     """
 
@@ -30,5 +30,19 @@ class brokerClient(object):
     def broker_get_contract_expiry_date(self, contract_object_with_ib_broker_config):
         raise NotImplementedError
 
+    def broker_get_account_value_across_currency_across_accounts(self):
+        raise NotImplementedError
+
     def close_connection(self):
         pass
+
+    def broker_get_positions(self, account_id = arg_not_supplied):
+        raise NotImplementedError
+
+    def broker_submit_single_leg_order(self, instrument_code, contract_id, account,
+                                                  order_type = "market",
+                                                  limit_price = None):
+        raise NotImplementedError
+
+    def broker_get_orders(self):
+        raise NotImplementedError

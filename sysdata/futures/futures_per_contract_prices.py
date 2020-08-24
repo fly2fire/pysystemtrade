@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 
 from syscore.pdutils import merge_data_series_with_label_column
+from syscore.objects import arg_not_supplied, missing_data, data_error
 
 from sysdata.data import baseData
 from sysdata.futures.contracts import futuresContract
@@ -34,6 +35,7 @@ class futuresContractPrices(pd.DataFrame):
         super().__init__(data)
 
         self._is_empty=False
+        data.index.name="index" # for arctic compatibility
 
 
     @classmethod
@@ -77,7 +79,8 @@ class futuresContractPrices(pd.DataFrame):
     def empty(self):
         return
 
-    def merge_with_other_prices(self, new_futures_per_contract_prices, only_add_rows=True):
+    def merge_with_other_prices(self, new_futures_per_contract_prices, only_add_rows=True,
+                                check_for_spike=True):
         """
         Merges self with new data.
         If only_add_rows is True,
@@ -88,7 +91,7 @@ class futuresContractPrices(pd.DataFrame):
         :return: merged futures_per_contract object
         """
         if only_add_rows:
-            return self.add_rows_to_existing_data(new_futures_per_contract_prices)
+            return self.add_rows_to_existing_data(new_futures_per_contract_prices, check_for_spike=check_for_spike)
         else:
             return self._full_merge_of_existing_data(new_futures_per_contract_prices)
 
@@ -105,7 +108,11 @@ class futuresContractPrices(pd.DataFrame):
 
         return futuresContractPrices(merged_data)
 
-    def add_rows_to_existing_data(self, new_futures_per_contract_prices):
+    def remove_zero_volumes(self):
+        self = self[self[VOLUME_COLUMN] > 0]
+        return futuresContractPrices(self)
+
+    def add_rows_to_existing_data(self, new_futures_per_contract_prices, check_for_spike=True):
         """
         Merges self with new data.
         Only newer data will be added
@@ -115,7 +122,12 @@ class futuresContractPrices(pd.DataFrame):
         :return: merged futures_per_contract object
         """
 
-        merged_futures_prices = merge_newer_data(pd.DataFrame(self), new_futures_per_contract_prices)
+        merged_futures_prices = merge_newer_data(pd.DataFrame(self), new_futures_per_contract_prices,
+                                                 check_for_spike=check_for_spike, column_to_check=FINAL_COLUMN)
+
+        if merged_futures_prices is data_error:
+            return data_error
+
         merged_futures_prices = futuresContractPrices(merged_futures_prices)
 
         return merged_futures_prices
@@ -235,13 +247,27 @@ class dictFuturesContractFinalPrices(dict):
 
         return sorted_contract_ids[-1]
 
-    def matched_prices(self):
-        # Return pd.DataFrame where we only have prices in all contracts
+    def joint_data(self):
 
         joint_data = [pd.Series(prices, name=contractid) for contractid, prices in self.items()]
         joint_data = pd.concat(joint_data, axis=1)
 
-        matched_data = joint_data.dropna()
+        return joint_data
+
+    def matched_prices(self, contracts_to_match = arg_not_supplied):
+        # Return pd.DataFrame where we only have prices in all contracts
+
+        if contracts_to_match is arg_not_supplied:
+            contracts_to_match = self.keys()
+
+        joint_data = self.joint_data()
+        joint_data_to_match = joint_data[contracts_to_match]
+
+        matched_data = joint_data_to_match.dropna()
+
+        if len(matched_data)==0:
+            ## This will happen if there are no matches
+            return missing_data
 
         return matched_data
 
@@ -523,9 +549,53 @@ class futuresContractPriceData(baseData):
         :return: data
         """
 
-        ans = self._perform_contract_method_for_instrument_code_and_contract_date( instrument_code, contract_date, "get_prices_for_contract_object")
+        ans = self._perform_contract_method_for_instrument_code_and_contract_date( instrument_code, contract_date,
+                                                                                   "get_prices_for_contract_object")
 
         return ans
+
+    def get_recent_bid_ask_tick_data_for_instrument_code_and_contract_date(self, instrument_code, contract_date):
+        """
+        Convenience method for when we have a code and date str, and don't want to build an object
+
+        :return: data
+        """
+
+        ans = self._perform_contract_method_for_instrument_code_and_contract_date( instrument_code, contract_date,
+                                                                                   "get_recent_bid_ask_tick_data_for_contract_object")
+
+        return ans
+
+
+    def get_recent_bid_ask_tick_data_for_order(self, order):
+        ans = self._perform_contract_method_for_order(order, "get_recent_bid_ask_tick_data_for_contract_object")
+        return ans
+
+    def get_ticker_object_for_order(self, order):
+        ans = self._perform_contract_method_for_order(order, "get_ticker_object_for_contract_object")
+        return ans
+
+    def cancel_market_data_for_order(self, order):
+        ans = self._perform_contract_method_for_order(order, "cancel_market_data_for_contract_object")
+        return ans
+
+    def _perform_contract_method_for_order(self, order, method, **kwargs):
+        contract_object = futuresContract(order.instrument_code, order.contract_id)
+        trade_list_for_multiple_legs = order.trade.qty
+        method_to_call = getattr(self, method)
+
+        result = method_to_call(contract_object, trade_list_for_multiple_legs=trade_list_for_multiple_legs, **kwargs)
+
+        return result
+
+    def get_ticker_object_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        raise NotImplementedError
+
+    def cancel_market_data_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        raise NotImplementedError
+
+    def get_recent_bid_ask_tick_data_for_contract_object(self, contract_object, trade_list_for_multiple_legs=None):
+        raise NotImplementedError
 
 
     def get_prices_for_contract_object(self, contract_object):
@@ -603,6 +673,7 @@ class futuresContractPriceData(baseData):
         """
 
         ans = self._perform_contract_method_for_instrument_code_and_contract_date( instrument_code, contract_date, "write_prices_for_contract_object",
+                                                                                   futures_price_data,
                                                                                    ignore_duplication=ignore_duplication)
 
         return ans
@@ -642,18 +713,8 @@ class futuresContractPriceData(baseData):
 
         raise NotImplementedError(BASE_CLASS_ERROR)
 
-    def get_actual_expiry_date_for_instrument_code_and_contract_date(self, instrument_code, contract_date):
-        """
-        Convenience method for when we have a code and date str, and don't want to build an object
 
-        :return: data
-        """
-
-        ans = self._perform_contract_method_for_instrument_code_and_contract_date( instrument_code, contract_date, "get_actual_expiry_date_for_contract")
-
-        return ans
-
-    def get_actual_expiry_date_for_contract(self, futures_contract_object):
+    def get_brokers_instrument_code(self, instrument_code):
         raise NotImplementedError(BASE_CLASS_ERROR)
 
     def update_prices_for_for_instrument_code_and_contract_date(self, instrument_code, contract_date,
@@ -671,7 +732,8 @@ class futuresContractPriceData(baseData):
 
         return ans
 
-    def update_prices_for_contract(self, futures_contract_object, new_futures_per_contract_prices):
+    def update_prices_for_contract(self, futures_contract_object, new_futures_per_contract_prices,
+                                   check_for_spike=True):
         """
         Reads existing data, merges with new_futures_prices, writes merged data
 
@@ -682,7 +744,12 @@ class futuresContractPriceData(baseData):
                                  contract_date=futures_contract_object.date)
 
         old_prices = self.get_prices_for_contract_object(futures_contract_object)
-        merged_prices = old_prices.add_rows_to_existing_data(new_futures_per_contract_prices)
+        merged_prices = old_prices.add_rows_to_existing_data(new_futures_per_contract_prices,
+                                                             check_for_spike=check_for_spike)
+
+        if merged_prices is data_error:
+            new_log.msg("Price has moved too much - will need to manually check")
+            return data_error
 
         rows_added = len(merged_prices) - len(old_prices)
 
@@ -696,6 +763,14 @@ class futuresContractPriceData(baseData):
         new_log.msg("Added %d additional rows of data" % rows_added)
 
         return rows_added
+
+    def _delete_all_prices_for_all_instruments(self, are_you_sure = False):
+        if are_you_sure:
+            instrument_list = self.get_instruments_with_price_data()
+            for instrument_code in instrument_list:
+                self.delete_all_prices_for_instrument_code(instrument_code, areyousure=are_you_sure)
+        else:
+            self.log.error("You need to call delete_all_prices_for_all_instruments with a flag to be sure")
 
     def delete_prices_for_contract_object(self, futures_contract_object, areyousure=False):
         """
@@ -750,11 +825,11 @@ class futuresContractPriceData(baseData):
 
         return contract_dates
 
-    def _perform_contract_method_for_instrument_code_and_contract_date(self, instrument_code, contract_date, method_name, **kwargs):
+    def _perform_contract_method_for_instrument_code_and_contract_date(self, instrument_code, contract_date, method_name, *args, **kwargs):
         contract_object = self._object_given_instrumentCode_and_contractDate(instrument_code, contract_date)
         method = getattr(self, method_name)
 
-        return method(contract_object, **kwargs)
+        return method(contract_object, *args, **kwargs)
 
     def _object_given_instrumentCode_and_contractDate(self, instrument_code, contract_date):
         """

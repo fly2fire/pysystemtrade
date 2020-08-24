@@ -2,10 +2,13 @@
 Utilities I can't put anywhere else...
 """
 
-from math import copysign
+from math import copysign, gcd
 from copy import copy
 import sys
 import numpy as np
+import datetime
+import functools
+
 
 class not_required_flag(object):
     def __repr__(self):
@@ -158,7 +161,7 @@ def value_or_npnan(x, return_value = None):
         ## Not something that can be compared to a nan
         pass
 
-    # Eithier wrong type, or not a nan
+    # Either wrong type, or not a nan
     return x
 
 def get_safe_from_dict(some_dict, some_arg_name, some_default):
@@ -168,6 +171,16 @@ def get_safe_from_dict(some_dict, some_arg_name, some_default):
     else:
         return arg_from_dict
 
+def are_dicts_equal(d1, d2):
+    d1_keys = set(d1.keys())
+    d2_keys = set(d2.keys())
+    intersect_keys = d1_keys.intersection(d2_keys)
+    if len(intersect_keys)!=len(d1_keys):
+        return False
+    same = set(o for o in intersect_keys if d1[o] == d2[o])
+    if len(same)!=len(d1_keys):
+        return False
+    return True
 
 
 class progressBar(object):
@@ -230,6 +243,160 @@ class progressBar(object):
     def finished(self):
         sys.stdout.write("\n")
 
+class quickTimer(object):
+    def __init__(self, seconds = 60):
+        self._started = datetime.datetime.now()
+        self._time_limit = seconds
+
+    @property
+    def unfinished(self):
+     return not self.finished
+
+    @property
+    def finished(self):
+        time_now = datetime.datetime.now()
+        elapsed = time_now - self._started
+        if elapsed.seconds>self._time_limit:
+            return True
+        else:
+            return False
+
+# avoids encoding problems with mongo
+_none = ""
+
+def none_to_object(x, object):
+    if x is _none:
+        return object
+    else:
+        return x
+
+def object_to_none(x, object, y=_none):
+    if x is object:
+        return y
+    else:
+        return x
+
+def get_unique_list(somelist):
+    uniquelist = []
+
+    for letter in somelist:
+        if letter not in uniquelist:
+            uniquelist.append(letter)
+
+    return uniquelist
+
+def get_and_convert(prompt, type_expected=int, allow_default=True, default_value = 0, default_str=None):
+    invalid = True
+    input_str = prompt + " "
+    if allow_default:
+        if default_str is None:
+            input_str = input_str + "<RETURN for default %s> " % str(default_value)
+        else:
+            input_str = input_str + "<RETURN for %s> " % default_str
+
+    while invalid:
+        ans = input(input_str)
+
+        if ans == "" and allow_default:
+            return default_value
+        try:
+            result = type_expected(ans)
+            return result
+        except:
+            print("%s is not of expected type %s" % (ans, type_expected.__name__))
+            continue
+
+TOP_LEVEL = -1
+class run_interactive_menu(object):
+    def __init__(self, top_level_menu_of_options, nested_menu_of_options, exit_option = -1, another_menu = -2):
+        """
+
+        :param top_level_menu_of_options: A dict of top level options
+        :param nested_menu_of_options: A dict of nested dicts, top levels keys are keys in top_level
+        :return: object
+        """
+
+        self._top_level = top_level_menu_of_options
+        self._nested = nested_menu_of_options
+        self._location = TOP_LEVEL
+        self._exit_option = exit_option
+        self._another_menu = another_menu
+
+    def propose_options_and_get_input(self):
+        is_top_level = self._location == TOP_LEVEL
+        if is_top_level:
+            top_level_menu = self._top_level
+            result = print_menu_and_get_response(top_level_menu, default_option=-1, default_str="EXIT")
+            if result==-1:
+                return self._exit_option
+            else:
+                self._location = result
+                return self._another_menu
+        else:
+            sub_menu = self._nested[self._location]
+            result = print_menu_and_get_response(sub_menu, default_option=-1, default_str="Back")
+            if result==-1:
+                self._location = -1
+                return self._another_menu
+            else:
+                return result
+
+
+
+
+def print_menu_and_get_response(menu_of_options, default_option = None, default_str=""):
+    """
+
+    :param menu_of_options: A dict, keys are ints, values are str
+    :param default_option: None, or one of the keys
+    :return: int menu chosen
+    """
+
+    menu_options_list = list(menu_of_options.keys())
+    menu_options_list.sort()
+    for option in menu_options_list:
+        print("%d: %s" % (option, menu_of_options[option]))
+    print("\n")
+    computer_says_no = True
+    if default_option is None:
+        allow_default = False
+    else:
+        allow_default = True
+        menu_options_list = [default_option]+menu_options_list
+
+    while computer_says_no:
+        ans = get_and_convert("Your choice?", default_value=default_option, type_expected=int, allow_default=allow_default,
+                              default_str=default_str)
+        if ans not in menu_options_list:
+            print("Not a valid option")
+            continue
+        else:
+            computer_says_no = False
+            break
+
+    return ans
+
+
+def transfer_object_attributes(named_tuple_object, original_object):
+    kwargs = dict([(field_name, getattr(original_object, field_name)) \
+                   for field_name in named_tuple_object._fields])
+    new_object = named_tuple_object(**kwargs)
+
+    return new_object
+
+def highest_common_factor_for_list(list_of_ints):
+    return functools.reduce(gcd, list_of_ints)
+
+def divide_list_of_ints_by_highest_common_factor(list_of_ints):
+    gcd_value = highest_common_factor_for_list(list_of_ints)
+    new_list = [int(float(x)/gcd_value) for x in list_of_ints]
+    return new_list
+
+def list_of_ints_with_highest_common_factor_positive_first(list_of_ints):
+    new_list = divide_list_of_ints_by_highest_common_factor(list_of_ints)
+    multiply_sign = sign(new_list[0])
+    new_list = [x*multiply_sign for x in new_list]
+    return new_list
 
 if __name__ == '__main__':
     import doctest

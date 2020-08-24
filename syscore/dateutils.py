@@ -21,13 +21,14 @@ ROOT_WEEKS_IN_YEAR = WEEKS_IN_YEAR**.5
 MONTHS_IN_YEAR = 12.0
 ROOT_MONTHS_IN_YEAR = MONTHS_IN_YEAR**.5
 
-ARBITRARY_START = pd.datetime(1900, 1, 1)
+ARBITRARY_START = datetime.datetime(1900, 1, 1)
 
 HOURS_PER_DAY = 24
 MINUTES_PER_HOUR = 60
 SECONDS_PER_HOUR = 60
+SECONDS_PER_DAY = HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_HOUR
 
-SECONDS_IN_YEAR = CALENDAR_DAYS_IN_YEAR * HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_HOUR
+SECONDS_IN_YEAR = CALENDAR_DAYS_IN_YEAR * SECONDS_PER_DAY
 UNIXTIME_CONVERTER = 1e9
 
 UNIXTIME_IN_YEAR = UNIXTIME_CONVERTER * SECONDS_IN_YEAR
@@ -244,17 +245,22 @@ def time_matches(index_entry, closing_time=pd.DateOffset(hours=12, minutes=0, se
         return False
 
 """
-Convert date into a float, and back again
+Convert date into a decimal, and back again
 """
 LONG_DATE_FORMAT = "%Y%m%d%H%M%S.%f"
+CONVERSION_FACTOR = 10000
 
 def datetime_to_long(date_to_convert):
-    return float(date_to_convert.strftime(LONG_DATE_FORMAT))
+    as_str = date_to_convert.strftime(LONG_DATE_FORMAT)
+    as_float = float(as_str)
+    return int(as_float*CONVERSION_FACTOR)
 
-def long_to_datetime(float_to_convert):
-    str_to_convert='{0:.6f}'.format(float_to_convert)
+def long_to_datetime(int_to_convert):
+    as_float = float(int_to_convert)/CONVERSION_FACTOR
+    str_to_convert='%.6f' % as_float
     converted_datetime = datetime.datetime.strptime(str_to_convert, LONG_DATE_FORMAT)
     return converted_datetime
+
 
 if __name__ == '__main__':
     import doctest
@@ -271,3 +277,29 @@ def adjust_timestamp(index_entry, actual_close = pd.DateOffset(hours = 23, minut
         new_index_entry = index_entry + time_offset
 
     return new_index_entry
+
+def get_datetime_input(prompt, allow_default = True):
+    invalid_input = True
+    input_str = prompt+": Enter date and time in format %Y%-%m-%d eg '2020-05-30' OR '%Y-%m-%d %H:%M:%S' eg '2020-05-30 14:04:11'"
+    if allow_default:
+        input_str = input_str+" <RETURN for now>"
+    while invalid_input:
+        ans = input(input_str)
+        if ans=="" and allow_default:
+            return datetime.datetime.now()
+        try:
+            if len(ans)==10:
+                ans = datetime.datetime.strptime(ans, "%Y-%m-%d")
+            elif len(ans)==19:
+                ans = datetime.datetime.strptime(ans, "%Y-%m-%d %H:%M:%S")
+            else:
+                ## problems formatting will also raise value error
+                raise ValueError
+            invalid_input=False
+            break
+
+        except ValueError:
+            print("%s is not a valid datetime string" % ans)
+            continue
+
+    return ans

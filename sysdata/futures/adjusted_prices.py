@@ -19,7 +19,7 @@ from sysdata.futures.futures_per_contract_prices import futuresContractFinalPric
 
 def panama_stitch(multiple_prices_input, forward_fill = False):
     """
-    Do a panama stich for adjusted prices
+    Do a panama stitch for adjusted prices
 
     :param multiple_prices:  futuresMultiplePrices
     :return: pd.Series of adjusted prices
@@ -76,6 +76,9 @@ class futuresAdjustedPrices(pd.Series):
         super().__init__(data)
 
         self._is_empty=False
+
+        data.index.name="index" # arctic compatible
+        data.name=""
 
     @classmethod
     def create_empty(futuresContractPrices):
@@ -189,6 +192,14 @@ class futuresAdjustedPricesData(baseData):
 
     def __getitem__(self, instrument_code):
         return self.get_adjusted_prices(instrument_code)
+
+    def _delete_all_adjusted_prices(self, are_you_sure = False):
+        if are_you_sure:
+            instrument_list = self.get_list_of_instruments()
+            for instrument_code in instrument_list:
+                self.delete_adjusted_prices(instrument_code, are_you_sure=are_you_sure)
+        else:
+            self.log.error("You need to call delete_all_adjusted_prices with a flag to be sure")
 
     def delete_adjusted_prices(self, instrument_code, are_you_sure=False):
         self.log.label(instrument_code=instrument_code)

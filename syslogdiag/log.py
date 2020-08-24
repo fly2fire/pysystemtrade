@@ -1,9 +1,11 @@
 from copy import copy
 import datetime
-from collections import UserList
 
 from sysdata.mongodb.mongo_connection import mongoConnection, MONGO_ID_KEY
 from syscore.dateutils import long_to_datetime, datetime_to_long
+from syscore.objects import missing_data
+from syslogdiag.emailing import send_mail_msg
+
 
 class logger(object):
     """
@@ -248,6 +250,9 @@ class logtoscreen(logger):
         else:
             print(text)
 
+        if msglevel == 2:
+            print(text)
+
         if msglevel == 3:
             print(text)
 
@@ -328,8 +333,17 @@ class logEntry(object):
     def log_dict(self):
         return self._log_dict
 
+    @property
+    def timestamp(self):
+        return self._timestamp
+
+    @property
+    def text(self):
+        return self._text
+
 
 LOG_COLLECTION_NAME = "Logs"
+EMAIL_ON_LOG_LEVEL = [4]
 
 class logToMongod(logger):
     """
@@ -340,9 +354,6 @@ class logToMongod(logger):
         self._mongo = mongoConnection(LOG_COLLECTION_NAME, mongo_db=mongo_db)
 
         super().__init__(type= type, log_level = log_level, ** kwargs)
-
-        # this won't create the index if it already exists
-        self._mongo.create_multikey_index(LOG_RECORD_ID, LEVEL_ID)
 
     def get_last_used_log_id(self):
         """
@@ -375,8 +386,17 @@ class logToMongod(logger):
 
         self._mongo.collection.insert_one(log_entry.log_dict())
 
+        if msglevel in EMAIL_ON_LOG_LEVEL:
+            ## Critical, send an email
+            self.email_user(log_entry)
+
         return log_entry
 
+    def email_user(self, log_entry):
+        try:
+            send_mail_msg(str(log_entry), "*CRITICAL ERROR*")
+        except:
+            self.error("Couldn't email user")
 
 
 
@@ -410,6 +430,13 @@ class accessLogFromMongodb(object):
 
         results_as_text = self.get_log_items(attribute_dict=attribute_dict, lookback_days=lookback_days)
         print("\n".join(results_as_text))
+
+    def find_last_entry_date(self, attribute_dict = dict(), lookback_days = 30):
+        results = self.get_log_items_as_entries(attribute_dict=attribute_dict, lookback_days=lookback_days)
+        time_stamps = [entry.timestamp for entry in results]
+        if len(time_stamps)==0:
+            return missing_data
+        return max(time_stamps)
 
     def get_log_items_as_entries(self, attribute_dict=dict(), lookback_days=1):
         """
